@@ -1,13 +1,21 @@
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import { envs } from 'src/config/envs';
 import Stripe from 'stripe';
 import { PaymentSessionDto } from './dto/payment-session.dto';
 import { Request, request, Response } from 'express';
+import { NATS_SERVICE } from 'src/config/services';
+import { ClientProxy } from '@nestjs/microservices';
 
 @Injectable()
 export class PaymentsService {
 
     private readonly stripe = new Stripe( envs.stripeSecret );
+    private readonly logger = new Logger('Payments-Service');
+
+    constructor(
+        @Inject(NATS_SERVICE)
+        private readonly client: ClientProxy 
+    ) {}
     
     async createPaymentSession( paymentSessionDto: PaymentSessionDto ) {
 
@@ -56,18 +64,37 @@ export class PaymentsService {
             res.status(400).send(`Webhook error: ${ error.message }`)
             return;
         }
-
+        
+        let chargeObject;
+        let payload;
+        
         switch (event.type) {
             case 'payment_intent.created':
                 console.log('payment_intent.created')
                 break;
             case 'charge.updated':
-                // TODO: Llamar microservice
-                const chargeSucceeded = event.data.object;
-                console.log('CHARGE UPDATED!!!')
-                console.log({
-                    metadata: chargeSucceeded.metadata
-                })
+                chargeObject = event.data.object;
+
+                payload = {
+                    stripePaymentId: chargeObject.id,
+                    orderId: chargeObject.metadata.orderId,
+                    receiptUrl: chargeObject.receipt_url,
+                }
+                // this.logger.log({ payload });
+                this.client.emit('payment.succeeded', payload);
+                break;
+
+            case 'charge.succeeded':
+                chargeObject = event.data.object;
+
+                payload = {
+                    stripePaymentId: chargeObject.id,
+                    orderId: chargeObject.metadata.orderId,
+                    receiptUrl: chargeObject.receipt_url,
+                }
+
+                // this.logger.log({ payload });
+                this.client.emit('payment.succeeded', payload);
                 break;
             default:
                 console.log(`Event ${ event.type } not handled`)
